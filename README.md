@@ -41,6 +41,17 @@ Completely Fair Scheduler (CFS).
 - CPU-bound vs I/O-bound at equal priority
 
 ---
+## Notes on this Fork
+
+This repository is forked from the course boilerplate. The following files
+contain our implementation:
+
+- `engine.c` — Tasks 1, 2, 3: container runtime, CLI, bounded-buffer logging
+- `monitor.c` — Task 4: kernel module, memory limit enforcement
+- `cpu_hog.c`, `io_pulse.c` — Task 5 workloads
+- `README.md` — Task 5 experiment analysis (this file)
+
+---
 
 ## Workloads
 
