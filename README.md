@@ -148,18 +148,6 @@ This demonstrates proportional fairness under CPU contention.
 
 ---
 
-## File Structure
-
-```
-OS-Task5-Scheduler/
-├── cpu_hog.c
-├── io_pulse.c
-├── Makefile
-└── README.md
-```
-
----
-
 ## Conclusion
 
 These experiments confirm that the Linux Completely Fair Scheduler distributes CPU time proportionally based on process weights while maintaining responsiveness for I/O-bound workloads. CPU-bound processes compete strictly based on priority, while I/O-bound processes benefit from frequent blocking and fast wakeup scheduling.
