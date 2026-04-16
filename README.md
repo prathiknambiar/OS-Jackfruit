@@ -2,15 +2,46 @@
 
 Multi-Container Runtime — OS Mini Project (UE24CS242B)
 
----
-
 ## Overview
 
-This repository contains the Task 5 contribution to the Multi-Container Runtime project: Scheduler Experiments and Analysis.
+This project implements a lightweight multi-container runtime in C using Linux namespaces and system-level primitives. The system supports container execution, monitoring, and logging, and is extended with a kernel module for memory management.
 
-The runtime launches container processes using Linux `clone()` with isolated PID, UTS, and mount namespaces. From the kernel's perspective, each container is treated as a normal Linux process and is scheduled by the Completely Fair Scheduler (CFS).
+While the project consists of multiple components (Tasks 1–4), this repository primarily focuses on **Task 5: Scheduler Experiments and Analysis**, which investigates the behavior of the Linux Completely Fair Scheduler (CFS).
 
-This task demonstrates CFS behaviour through controlled experiments using CPU-bound and I/O-bound workloads.
+---
+
+## Project Outline
+
+The project is divided into the following components:
+
+### Task 1 — Basic Container Runtime
+
+* Container creation using `clone()`
+* Namespace isolation (PID, UTS, Mount)
+* Filesystem isolation using `chroot()`
+
+### Task 2 — CLI and Container Management
+
+* Commands: `start`, `run`, `ps`, `logs`, `stop`
+* Tracking and managing multiple containers
+
+### Task 3 — Logging System
+
+* Bounded-buffer logging pipeline
+* Producer–consumer model using POSIX threads
+* Per-container log files
+
+### Task 4 — Kernel Module (Memory Monitoring)
+
+* Tracks container memory usage
+* Soft limit warnings
+* Hard limit enforcement (process termination)
+
+### Task 5 — Scheduler Experiments (Main Focus)
+
+* Empirical analysis of Linux CFS
+* CPU-bound vs CPU-bound scheduling
+* CPU-bound vs I/O-bound scheduling
 
 ---
 
@@ -25,9 +56,9 @@ This task demonstrates CFS behaviour through controlled experiments using CPU-bo
 
 ## Background: Completely Fair Scheduler (CFS)
 
-CFS schedules processes based on virtual runtime (vruntime), which represents CPU time used, normalized by process weight.
+CFS schedules processes based on virtual runtime (vruntime), which represents CPU time consumed normalized by process weight.
 
-Nice values are mapped to weights using the kernel’s `sched_prio_to_weight` table:
+Nice values are mapped to weights using the kernel’s scheduling table:
 
 | Nice Value | Weight | CPU Share (2 processes) |
 | ---------- | ------ | ----------------------- |
@@ -37,7 +68,7 @@ Nice values are mapped to weights using the kernel’s `sched_prio_to_weight` ta
 
 CPU share formula:
 
-```
+```id="9l8c0m"
 CPU share = weight / (sum of weights)
 ```
 
@@ -45,7 +76,7 @@ CPU share = weight / (sum of weights)
 
 ## Build Instructions
 
-```bash
+```bash id="6n4l3y"
 make
 
 # Or manually:
@@ -55,7 +86,7 @@ gcc -O2 -Wall -static -o io_pulse io_pulse.c
 
 Copy binaries into container root filesystems:
 
-```bash
+```bash id="m8k2ps"
 cp cpu_hog  ./rootfs-alpha/
 cp cpu_hog  ./rootfs-beta/
 cp io_pulse ./rootfs-gamma/
@@ -65,9 +96,9 @@ cp io_pulse ./rootfs-gamma/
 
 ## Experiment A — CPU-bound vs CPU-bound (different priorities)
 
-Two containers run `cpu_hog` for 20 seconds concurrently:
+Two containers run `cpu_hog` concurrently:
 
-```bash
+```bash id="3y0d4k"
 sudo ./engine start alpha ./rootfs-alpha /cpu_hog 20 --nice -10
 sudo ./engine start beta  ./rootfs-beta  /cpu_hog 20 --nice 10
 
@@ -84,17 +115,15 @@ sudo ./engine logs beta
 
 ### Observation
 
-The alpha container (nice -10) receives a significantly larger share of CPU time due to its higher weight. The beta container progresses much more slowly because it is allocated a very small portion of CPU time.
+The alpha container receives a significantly larger share of CPU time due to its higher weight. The beta container progresses more slowly due to limited CPU allocation.
 
-On multi-core systems, both containers may complete in similar wall-clock time due to parallel execution. The difference becomes more evident under single-core contention.
+On multi-core systems, both containers may complete in similar wall-clock time due to parallel execution. The scheduling difference becomes more visible under single-core contention.
 
 ---
 
 ## Experiment B — CPU-bound vs I/O-bound (equal priority)
 
-Run one CPU-bound and one I/O-bound container:
-
-```bash
+```bash id="0zt9n3"
 sudo ./engine start alpha ./rootfs-alpha /cpu_hog 20 --nice 0
 sudo ./engine start gamma ./rootfs-gamma /io_pulse 20 --nice 0
 
@@ -104,50 +133,50 @@ sudo ./engine logs gamma
 
 ### Results
 
-| Container | Workload | Nice | Behaviour                       |
-| --------- | -------- | ---- | ------------------------------- |
-| alpha     | cpu_hog  | 0    | Continuous CPU usage            |
-| gamma     | io_pulse | 0    | Periodic blocking (I/O + sleep) |
+| Container | Workload | Nice | Behaviour            |
+| --------- | -------- | ---- | -------------------- |
+| alpha     | cpu_hog  | 0    | Continuous CPU usage |
+| gamma     | io_pulse | 0    | Periodic blocking    |
 
 ### Observation
 
-The I/O-bound process frequently blocks and is removed from the run queue, allowing the CPU-bound process to use most of the CPU.
-
-When the I/O process wakes up, it is scheduled quickly due to its lower vruntime, executes briefly, and then blocks again. This results in high responsiveness without significantly impacting the CPU-bound process.
+The I/O-bound process frequently blocks and yields the CPU, allowing the CPU-bound process to utilize available CPU time. When the I/O-bound process wakes, it is scheduled promptly due to its lower virtual runtime, resulting in responsive execution.
 
 ---
 
 ## Analysis
 
-### Experiment A: Weight-Based Scheduling
+### Weight-Based Scheduling
 
-CFS distributes CPU time proportionally based on weights derived from nice values.
+CFS distributes CPU time proportionally based on process weights derived from nice values.
 
-* alpha (nice -10) receives approximately 98.9% CPU
-* beta (nice +10) receives approximately 1.1% CPU
+* High-priority processes receive a larger share of CPU
+* Low-priority processes still receive a guaranteed minimum share
 
-This demonstrates proportional fairness under CPU contention.
+### I/O vs CPU Behaviour
 
----
-
-### Experiment B: I/O vs CPU Behaviour
-
-* I/O-bound processes yield CPU voluntarily during blocking
-* CPU-bound processes utilize available CPU time continuously
-* Upon wakeup, I/O-bound processes are scheduled quickly due to low vruntime
+* CPU-bound processes utilize CPU continuously
+* I/O-bound processes voluntarily yield CPU during blocking
+* Wakeup scheduling ensures responsiveness
 
 ---
 
-### CFS Properties Demonstrated
+## CFS Properties Demonstrated
 
-| Property              | Demonstration                            |
-| --------------------- | ---------------------------------------- |
-| Proportional fairness | CPU share based on weights               |
-| Starvation freedom    | Low-priority processes still receive CPU |
-| Responsive wakeup     | I/O-bound processes scheduled quickly    |
+| Property              | Description                     |
+| --------------------- | ------------------------------- |
+| Proportional fairness | CPU allocation based on weights |
+| Starvation freedom    | All processes receive CPU time  |
+| Responsive scheduling | Fast wakeup for I/O-bound tasks |
 
 ---
 
 ## Conclusion
 
-These experiments confirm that the Linux Completely Fair Scheduler distributes CPU time proportionally based on process weights while maintaining responsiveness for I/O-bound workloads. CPU-bound processes compete strictly based on priority, while I/O-bound processes benefit from frequent blocking and fast wakeup scheduling.
+This project demonstrates that the Linux Completely Fair Scheduler achieves fairness through proportional CPU allocation while maintaining responsiveness for interactive workloads. The experiments validate theoretical scheduling behavior using practical container-based workloads.
+
+---
+
+## Repository
+
+https://github.com/prathiknambiar/OS-Jackfruit
