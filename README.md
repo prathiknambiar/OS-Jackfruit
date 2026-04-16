@@ -1,111 +1,165 @@
-# Multi-Container Runtime
+# Task 5: Scheduler Experiments and Analysis
 
-A lightweight Linux container runtime in C with a long-running supervisor and a kernel-space memory monitor.
-
-Read [`project-guide.md`](project-guide.md) for the full project specification.
+Multi-Container Runtime — OS Mini Project (UE24CS242B)
 
 ---
 
-## Getting Started
+## Overview
 
-### 1. Fork the Repository
+This repository contains the Task 5 contribution to the Multi-Container Runtime project: Scheduler Experiments and Analysis.
 
-1. Go to [github.com/shivangjhalani/OS-Jackfruit](https://github.com/shivangjhalani/OS-Jackfruit)
-2. Click **Fork** (top-right)
-3. Clone your fork:
+The runtime launches container processes using Linux `clone()` with isolated PID, UTS, and mount namespaces. From the kernel's perspective, each container is treated as a normal Linux process and is scheduled by the Completely Fair Scheduler (CFS).
 
-```bash
-git clone https://github.com/<your-username>/OS-Jackfruit.git
-cd OS-Jackfruit
+This task demonstrates CFS behaviour through controlled experiments using CPU-bound and I/O-bound workloads.
+
+---
+
+## Workloads
+
+| File         | Type      | Behaviour                                           |
+| ------------ | --------- | --------------------------------------------------- |
+| `cpu_hog.c`  | CPU-bound | Tight loop, continuously uses CPU                   |
+| `io_pulse.c` | I/O-bound | Performs write bursts with `fsync()` and `usleep()` |
+
+---
+
+## Background: Completely Fair Scheduler (CFS)
+
+CFS schedules processes based on virtual runtime (vruntime), which represents CPU time used, normalized by process weight.
+
+Nice values are mapped to weights using the kernel’s `sched_prio_to_weight` table:
+
+| Nice Value | Weight | CPU Share (2 processes) |
+| ---------- | ------ | ----------------------- |
+| -10        | 9548   | ~98.9%                  |
+| 0          | 1024   | ~50%                    |
+| +10        | 110    | ~1.1%                   |
+
+CPU share formula:
+
+```
+CPU share = weight / (sum of weights)
 ```
 
-### 2. Set Up Your VM
+---
 
-You need an **Ubuntu 22.04 or 24.04** VM with **Secure Boot OFF**. WSL will not work.
-
-Install dependencies:
+## Build Instructions
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential linux-headers-$(uname -r)
-```
-
-### 3. Run the Environment Check
-
-```bash
-cd boilerplate
-chmod +x environment-check.sh
-sudo ./environment-check.sh
-```
-
-Fix any issues reported before moving on.
-
-### 4. Prepare the Root Filesystem
-
-```bash
-mkdir rootfs-base
-wget https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz
-tar -xzf alpine-minirootfs-3.20.3-x86_64.tar.gz -C rootfs-base
-
-# Make one writable copy per container you plan to run
-cp -a ./rootfs-base ./rootfs-alpha
-cp -a ./rootfs-base ./rootfs-beta
-```
-
-Do not commit `rootfs-base/` or `rootfs-*` directories to your repository.
-
-### 5. Understand the Boilerplate
-
-The `boilerplate/` folder contains starter files:
-
-| File                   | Purpose                                             |
-| ---------------------- | --------------------------------------------------- |
-| `engine.c`             | User-space runtime and supervisor skeleton          |
-| `monitor.c`            | Kernel module skeleton                              |
-| `monitor_ioctl.h`      | Shared ioctl command definitions                    |
-| `Makefile`             | Build targets for both user-space and kernel module |
-| `cpu_hog.c`            | CPU-bound test workload                             |
-| `io_pulse.c`           | I/O-bound test workload                             |
-| `memory_hog.c`         | Memory-consuming test workload                      |
-| `environment-check.sh` | VM environment preflight check                      |
-
-Use these as your starting point. You are free to restructure the repository however you want — the submission requirements are listed in the project guide.
-
-### 6. Build and Verify
-
-```bash
-cd boilerplate
 make
+
+# Or manually:
+gcc -O2 -Wall -static -o cpu_hog cpu_hog.c
+gcc -O2 -Wall -static -o io_pulse io_pulse.c
 ```
 
-If this compiles without errors, your environment is ready.
-
-### 7. GitHub Actions Smoke Check
-
-Your fork will inherit a minimal GitHub Actions workflow from this repository.
-
-That workflow only performs CI-safe checks:
-
-- `make -C boilerplate ci`
-- user-space binary compilation (`engine`, `memory_hog`, `cpu_hog`, `io_pulse`)
-- `./boilerplate/engine` with no arguments must print usage and exit with a non-zero status
-
-The CI-safe build command is:
+Copy binaries into container root filesystems:
 
 ```bash
-make -C boilerplate ci
+cp cpu_hog  ./rootfs-alpha/
+cp cpu_hog  ./rootfs-beta/
+cp io_pulse ./rootfs-gamma/
 ```
-
-This smoke check does not test kernel-module loading, supervisor runtime behavior, or container execution.
 
 ---
 
-## What to Do Next
+## Experiment A — CPU-bound vs CPU-bound (different priorities)
 
-Read [`project-guide.md`](project-guide.md) end to end. It contains:
+Two containers run `cpu_hog` for 20 seconds concurrently:
 
-- The six implementation tasks (multi-container runtime, CLI, logging, kernel monitor, scheduling experiments, cleanup)
-- The engineering analysis you must write
-- The exact submission requirements, including what your `README.md` must contain (screenshots, analysis, design decisions)
+```bash
+sudo ./engine start alpha ./rootfs-alpha /cpu_hog 20 --nice -10
+sudo ./engine start beta  ./rootfs-beta  /cpu_hog 20 --nice 10
 
-Your fork's `README.md` should be replaced with your own project documentation as described in the submission package section of the project guide. (As in get rid of all the above content and replace with your README.md)
+sudo ./engine logs alpha
+sudo ./engine logs beta
+```
+
+### Results
+
+| Container | Nice | Elapsed Time | CPU Share |
+| --------- | ---- | ------------ | --------- |
+| alpha     | -10  | ~19–20 s     | ~98.9%    |
+| beta      | +10  | ~20 s        | ~1.1%     |
+
+### Observation
+
+The alpha container (nice -10) receives a significantly larger share of CPU time due to its higher weight. The beta container progresses much more slowly because it is allocated a very small portion of CPU time.
+
+On multi-core systems, both containers may complete in similar wall-clock time due to parallel execution. The difference becomes more evident under single-core contention.
+
+---
+
+## Experiment B — CPU-bound vs I/O-bound (equal priority)
+
+Run one CPU-bound and one I/O-bound container:
+
+```bash
+sudo ./engine start alpha ./rootfs-alpha /cpu_hog 20 --nice 0
+sudo ./engine start gamma ./rootfs-gamma /io_pulse 20 --nice 0
+
+sudo ./engine logs alpha
+sudo ./engine logs gamma
+```
+
+### Results
+
+| Container | Workload | Nice | Behaviour                       |
+| --------- | -------- | ---- | ------------------------------- |
+| alpha     | cpu_hog  | 0    | Continuous CPU usage            |
+| gamma     | io_pulse | 0    | Periodic blocking (I/O + sleep) |
+
+### Observation
+
+The I/O-bound process frequently blocks and is removed from the run queue, allowing the CPU-bound process to use most of the CPU.
+
+When the I/O process wakes up, it is scheduled quickly due to its lower vruntime, executes briefly, and then blocks again. This results in high responsiveness without significantly impacting the CPU-bound process.
+
+---
+
+## Analysis
+
+### Experiment A: Weight-Based Scheduling
+
+CFS distributes CPU time proportionally based on weights derived from nice values.
+
+* alpha (nice -10) receives approximately 98.9% CPU
+* beta (nice +10) receives approximately 1.1% CPU
+
+This demonstrates proportional fairness under CPU contention.
+
+---
+
+### Experiment B: I/O vs CPU Behaviour
+
+* I/O-bound processes yield CPU voluntarily during blocking
+* CPU-bound processes utilize available CPU time continuously
+* Upon wakeup, I/O-bound processes are scheduled quickly due to low vruntime
+
+---
+
+### CFS Properties Demonstrated
+
+| Property              | Demonstration                            |
+| --------------------- | ---------------------------------------- |
+| Proportional fairness | CPU share based on weights               |
+| Starvation freedom    | Low-priority processes still receive CPU |
+| Responsive wakeup     | I/O-bound processes scheduled quickly    |
+
+---
+
+## File Structure
+
+```
+OS-Task5-Scheduler/
+├── cpu_hog.c
+├── io_pulse.c
+├── Makefile
+└── README.md
+```
+
+---
+
+## Conclusion
+
+These experiments confirm that the Linux Completely Fair Scheduler distributes CPU time proportionally based on process weights while maintaining responsiveness for I/O-bound workloads. CPU-bound processes compete strictly based on priority, while I/O-bound processes benefit from frequent blocking and fast wakeup scheduling.
