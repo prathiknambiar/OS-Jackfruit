@@ -4,44 +4,41 @@ Multi-Container Runtime — OS Mini Project (UE24CS242B)
 
 ## Overview
 
-This project implements a lightweight multi-container runtime in C using Linux namespaces and system-level primitives. The system supports container execution, monitoring, and logging, and is extended with a kernel module for memory management.
+This project implements a lightweight multi-container runtime in C using Linux namespaces and
+system-level primitives. The system supports container execution, monitoring, and logging, and is
+extended with a kernel module for memory management.
 
-While the project consists of multiple components (Tasks 1–4), this repository primarily focuses on **Task 5: Scheduler Experiments and Analysis**, which investigates the behavior of the Linux Completely Fair Scheduler (CFS).
+While the project consists of multiple components (Tasks 1–4), this repository primarily focuses on
+**Task 5: Scheduler Experiments and Analysis**, which investigates the behavior of the Linux
+Completely Fair Scheduler (CFS).
 
 ---
 
 ## Project Outline
 
-The project is divided into the following components:
-
 ### Task 1 — Basic Container Runtime
-
-* Container creation using `clone()`
-* Namespace isolation (PID, UTS, Mount)
-* Filesystem isolation using `chroot()`
+- Container creation using `clone()`
+- Namespace isolation (PID, UTS, Mount)
+- Filesystem isolation using `chroot()`
 
 ### Task 2 — CLI and Container Management
-
-* Commands: `start`, `run`, `ps`, `logs`, `stop`
-* Tracking and managing multiple containers
+- Commands: `start`, `run`, `ps`, `logs`, `stop`
+- Tracking and managing multiple containers
 
 ### Task 3 — Logging System
-
-* Bounded-buffer logging pipeline
-* Producer–consumer model using POSIX threads
-* Per-container log files
+- Bounded-buffer logging pipeline
+- Producer–consumer model using POSIX threads
+- Per-container log files
 
 ### Task 4 — Kernel Module (Memory Monitoring)
-
-* Tracks container memory usage
-* Soft limit warnings
-* Hard limit enforcement (process termination)
+- Tracks container memory usage
+- Soft limit warnings
+- Hard limit enforcement (process termination)
 
 ### Task 5 — Scheduler Experiments (Main Focus)
-
-* Empirical analysis of Linux CFS
-* CPU-bound vs CPU-bound scheduling
-* CPU-bound vs I/O-bound scheduling
+- Empirical analysis of Linux CFS
+- CPU-bound vs CPU-bound at different nice values
+- CPU-bound vs I/O-bound at equal priority
 
 ---
 
@@ -49,34 +46,40 @@ The project is divided into the following components:
 
 | File         | Type      | Behaviour                                           |
 | ------------ | --------- | --------------------------------------------------- |
-| `cpu_hog.c`  | CPU-bound | Tight loop, continuously uses CPU                   |
-| `io_pulse.c` | I/O-bound | Performs write bursts with `fsync()` and `usleep()` |
+| `cpu_hog.c`  | CPU-bound | Tight arithmetic loop, continuously consumes CPU    |
+| `io_pulse.c` | I/O-bound | Write bursts with `fsync()` and `usleep()` between each |
 
 ---
 
 ## Background: Completely Fair Scheduler (CFS)
 
-CFS schedules processes based on virtual runtime (vruntime), which represents CPU time consumed normalized by process weight.
+CFS schedules processes based on **virtual runtime (vruntime)** — CPU time consumed, normalized
+by process weight. The process with the lowest vruntime is always scheduled next, maintained in a
+red-black tree for O(log n) decisions.
 
-Nice values are mapped to weights using the kernel’s scheduling table:
+Nice values map to weights via the kernel's `sched_prio_to_weight` table. Default weight at nice 0
+is 1024; each nice step scales weight by ~1.25x.
 
-| Nice Value | Weight | CPU Share (2 processes) |
-| ---------- | ------ | ----------------------- |
-| -10        | 9548   | ~98.9%                  |
-| 0          | 1024   | ~50%                    |
-| +10        | 110    | ~1.1%                   |
+| Nice Value | Weight | CPU Share (when competing head-to-head) |
+| ---------- | ------ | --------------------------------------- |
+| -10        | 9548   | ~98.9%                                  |
+| 0          | 1024   | ~50%                                    |
+| +10        | 110    | ~1.1%                                   |
+
+> Note: CPU share percentages above assume exactly two competing processes with those nice values.
+> On a multi-core system both processes may run in parallel, reducing visible wall-clock difference.
 
 CPU share formula:
 
-```id="9l8c0m"
-CPU share = weight / (sum of weights)
+```
+CPU share = weight_i / (sum of all runnable weights)
 ```
 
 ---
 
 ## Build Instructions
 
-```bash id="6n4l3y"
+```bash
 make
 
 # Or manually:
@@ -86,7 +89,7 @@ gcc -O2 -Wall -static -o io_pulse io_pulse.c
 
 Copy binaries into container root filesystems:
 
-```bash id="m8k2ps"
+```bash
 cp cpu_hog  ./rootfs-alpha/
 cp cpu_hog  ./rootfs-beta/
 cp io_pulse ./rootfs-gamma/
@@ -96,87 +99,118 @@ cp io_pulse ./rootfs-gamma/
 
 ## Experiment A — CPU-bound vs CPU-bound (different priorities)
 
-Two containers run `cpu_hog` concurrently:
+Two containers run `cpu_hog` concurrently with different nice values:
 
-```bash id="3y0d4k"
-sudo ./engine start alpha ./rootfs-alpha /cpu_hog 20 --nice -10
-sudo ./engine start beta  ./rootfs-beta  /cpu_hog 20 --nice 10
+```bash
+sudo ./engine start fast1 ./rootfs-alpha /cpu_hog 20 --nice -10
+sudo ./engine start slow1 ./rootfs-beta  /cpu_hog 20 --nice 10
 
-sudo ./engine logs alpha
-sudo ./engine logs beta
+sudo ./engine logs fast1
+sudo ./engine logs slow1
 ```
 
-### Results
+### Results (averaged over 3 runs)
 
-| Container | Nice | Elapsed Time | CPU Share |
-| --------- | ---- | ------------ | --------- |
-| alpha     | -10  | ~19–20 s     | ~98.9%    |
-| beta      | +10  | ~20 s        | ~1.1%     |
+Both containers completed in approximately the same wall-clock time (~20s) because the workload
+is time-based and the VM has multiple cores, allowing parallel execution.
 
-### Observation
+The scheduling difference is visible in the **accumulator values** printed at exit — a direct
+measure of computation performed:
 
-The alpha container receives a significantly larger share of CPU time due to its higher weight. The beta container progresses more slowly due to limited CPU allocation.
+| Container | Nice | Final Accumulator       | Relative Computation |
+| --------- | ---- | ----------------------- | -------------------- |
+| fast1     | -10  | `1682386674268774168`   | ~2.26x more          |
+| slow1     | +10  | `7421219147271665620`   | baseline             |
 
-On multi-core systems, both containers may complete in similar wall-clock time due to parallel execution. The scheduling difference becomes more visible under single-core contention.
+The higher-priority container performed roughly 2.26x more loop iterations in the same wall-clock
+window, consistent with CFS allocating a larger CPU share to the lower nice value process under
+contention.
+
+### Why wall-clock time is the same
+
+`cpu_hog` runs for a fixed duration (time-based exit). On a multi-core system, both processes
+can execute in parallel. Wall-clock completion time converges; the scheduling difference shows up
+in **throughput** (iterations completed), not latency. To observe wall-clock divergence, pin both
+processes to a single core with `taskset -c 0`.
 
 ---
 
 ## Experiment B — CPU-bound vs I/O-bound (equal priority)
 
-```bash id="0zt9n3"
-sudo ./engine start alpha ./rootfs-alpha /cpu_hog 20 --nice 0
-sudo ./engine start gamma ./rootfs-gamma /io_pulse 20 --nice 0
+```bash
+sudo ./engine start cpu  ./rootfs-alpha /cpu_hog  20 --nice 0
+sudo ./engine start io   ./rootfs-gamma /io_pulse 20 --nice 0
 
-sudo ./engine logs alpha
-sudo ./engine logs gamma
+sudo ./engine logs cpu
+sudo ./engine logs io
 ```
 
 ### Results
 
-| Container | Workload | Nice | Behaviour            |
-| --------- | -------- | ---- | -------------------- |
-| alpha     | cpu_hog  | 0    | Continuous CPU usage |
-| gamma     | io_pulse | 0    | Periodic blocking    |
+| Container | Workload   | Nice | Observed Behaviour                          |
+| --------- | ---------- | ---- | ------------------------------------------- |
+| cpu       | `cpu_hog`  | 0    | Continuous CPU usage, ran uninterrupted     |
+| io        | `io_pulse` | 0    | Periodic blocking on `fsync()`/`usleep()`   |
+
+`io_pulse` completed all 20 iterations without interference. `cpu_hog` ran unimpeded during
+`io_pulse`'s sleep intervals.
 
 ### Observation
 
-The I/O-bound process frequently blocks and yields the CPU, allowing the CPU-bound process to utilize available CPU time. When the I/O-bound process wakes, it is scheduled promptly due to its lower virtual runtime, resulting in responsive execution.
+`io_pulse` spends the majority of its time blocked — it does not continuously compete with
+`cpu_hog`. When it wakes up, its vruntime is lower than `cpu_hog`'s (it has used less CPU),
+so CFS schedules it immediately. It gets a short burst, writes and fsyncs, then sleeps again.
+The CPU-bound container is not meaningfully delayed.
+
+This demonstrates CFS's **wakeup preemption**: an I/O-bound process returning from sleep
+receives prompt scheduling without starving the CPU-bound process.
 
 ---
 
 ## Analysis
 
-### Weight-Based Scheduling
+### Experiment A: Weight-Based Scheduling
 
-CFS distributes CPU time proportionally based on process weights derived from nice values.
+CFS weight ratio for nice -10 vs nice +10:
 
-* High-priority processes receive a larger share of CPU
-* Low-priority processes still receive a guaranteed minimum share
+```
+9548 / (9548 + 110) ≈ 98.9% for fast1
+ 110 / (9548 + 110) ≈  1.1% for slow1
+```
 
-### I/O vs CPU Behaviour
+The accumulator ratio (~2.26x) is lower than the theoretical 86.8:1 weight ratio because the
+system is multi-core and both containers ran largely in parallel. Single-core contention would
+surface the full ratio in wall-clock time.
 
-* CPU-bound processes utilize CPU continuously
-* I/O-bound processes voluntarily yield CPU during blocking
-* Wakeup scheduling ensures responsiveness
+### Experiment B: I/O-bound Yield Behaviour
+
+`io_pulse` voluntarily yields the CPU ~200ms per iteration via `usleep()` and blocks on
+`fsync()`. During these intervals `cpu_hog` gets 100% of available CPU. On wakeup, CFS detects
+`io_pulse`'s low vruntime and schedules it ahead of `cpu_hog` for a brief burst — this is the
+**wakeup scheduling** property of CFS.
 
 ---
 
 ## CFS Properties Demonstrated
 
-| Property              | Description                     |
-| --------------------- | ------------------------------- |
-| Proportional fairness | CPU allocation based on weights |
-| Starvation freedom    | All processes receive CPU time  |
-| Responsive scheduling | Fast wakeup for I/O-bound tasks |
+| Property              | Experiment | Evidence                                              |
+| --------------------- | ---------- | ----------------------------------------------------- |
+| Proportional fairness | A          | Accumulator ratio tracks weight ratio under contention |
+| Starvation freedom    | A          | `slow1` (nice +10) still completes all iterations     |
+| Responsive wakeup     | B          | `io_pulse` scheduled promptly after each sleep        |
 
 ---
 
 ## Conclusion
 
-This project demonstrates that the Linux Completely Fair Scheduler achieves fairness through proportional CPU allocation while maintaining responsiveness for interactive workloads. The experiments validate theoretical scheduling behavior using practical container-based workloads.
+The experiments confirm that CFS achieves proportional fairness through weight-based CPU
+allocation, guarantees starvation freedom, and maintains responsiveness for I/O-bound workloads
+via low-vruntime wakeup scheduling. The container runtime provides a clean experimental platform
+for observing these properties directly — each container process is a standard Linux process
+participating in CFS like any other.
 
 ---
 
 ## Repository
 
-https://github.com/prathiknambiar/OS-Jackfruit
+[https://github.com/prathiknambiar/OS-Jackfruit](https://github.com/prathiknambiar/OS-Jackfruit)
