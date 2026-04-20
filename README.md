@@ -113,8 +113,8 @@ cp io_pulse ./rootfs-gamma/
 Two containers run `cpu_hog` concurrently with different nice values:
 
 ```bash
-sudo ./engine start fast1 ./rootfs-alpha /cpu_hog 20 --nice -10
-sudo ./engine start slow1 ./rootfs-beta  /cpu_hog 20 --nice 10
+sudo ./engine start fast1 ./rootfs-alpha /cpu_hog --nice -10
+sudo ./engine start slow1 ./rootfs-beta  /cpu_hog --nice 10
 
 sudo ./engine logs fast1
 sudo ./engine logs slow1
@@ -149,8 +149,8 @@ processes to a single core with `taskset -c 0`.
 ## Experiment B — CPU-bound vs I/O-bound (equal priority)
 
 ```bash
-sudo ./engine start cpu  ./rootfs-alpha /cpu_hog  20 --nice 0
-sudo ./engine start io   ./rootfs-gamma /io_pulse 20 --nice 0
+sudo ./engine start cpu  ./rootfs-alpha /cpu_hog --nice 0
+sudo ./engine start io   ./rootfs-gamma /io_pulse --nice 0
 
 sudo ./engine logs cpu
 sudo ./engine logs io
